@@ -46,6 +46,12 @@
 		0B00001000000000000000B4 /* HandoffCoordinator+Send.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A4 /* HandoffCoordinator+Send.swift */; };
 		0B00001000000000000000B5 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A5 /* PrivacyInfo.xcprivacy */; };
 		0B00001000000000000000B6 /* HandoffOperationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A6 /* HandoffOperationGate.swift */; };
+		0B00001000000000000000B7 /* HandoffServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A7 /* HandoffServices.swift */; };
+		0B00001000000000000000B8 /* BluetoothHandoffService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A8 /* BluetoothHandoffService.swift */; };
+		0B00001000000000000000B9 /* PeerHandoffService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000A9 /* PeerHandoffService.swift */; };
+		0B00001000000000000000BA /* HandoffComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000AA /* HandoffComposition.swift */; };
+		0B00001000000000000000BB /* HandoffPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000AB /* HandoffPresentation.swift */; };
+		0B00001000000000000000BC /* HandoffMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B00001000000000000000AC /* HandoffMapping.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -91,6 +97,12 @@
 		0B00001000000000000000A4 /* HandoffCoordinator+Send.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HandoffCoordinator+Send.swift"; sourceTree = "<group>"; };
 		0B00001000000000000000A5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		0B00001000000000000000A6 /* HandoffOperationGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffOperationGate.swift; sourceTree = "<group>"; };
+		0B00001000000000000000A7 /* HandoffServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffServices.swift; sourceTree = "<group>"; };
+		0B00001000000000000000A8 /* BluetoothHandoffService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BluetoothHandoffService.swift; sourceTree = "<group>"; };
+		0B00001000000000000000A9 /* PeerHandoffService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerHandoffService.swift; sourceTree = "<group>"; };
+		0B00001000000000000000AA /* HandoffComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffComposition.swift; sourceTree = "<group>"; };
+		0B00001000000000000000AB /* HandoffPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffPresentation.swift; sourceTree = "<group>"; };
+		0B00001000000000000000AC /* HandoffMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffMapping.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -118,6 +130,7 @@
 			children = (
 				076AB1F72CE9D690004D45F0 /* IOBluetoothDevice+Extension.swift */,
 				076AB1F82CE9D690004D45F0 /* NetworkDevice+HealthCheck.swift */,
+				0B00001000000000000000AC /* HandoffMapping.swift */,
 			);
 			path = Extensions;
 			sourceTree = "<group>";
@@ -146,6 +159,11 @@
 				0B00001000000000000000A3 /* HandoffCoordinator+Take.swift */,
 				0B00001000000000000000A4 /* HandoffCoordinator+Send.swift */,
 				0B00001000000000000000A6 /* HandoffOperationGate.swift */,
+				0B00001000000000000000A7 /* HandoffServices.swift */,
+				0B00001000000000000000A8 /* BluetoothHandoffService.swift */,
+				0B00001000000000000000A9 /* PeerHandoffService.swift */,
+				0B00001000000000000000AA /* HandoffComposition.swift */,
+				0B00001000000000000000AB /* HandoffPresentation.swift */,
 			);
 			path = Manager;
 			sourceTree = "<group>";
@@ -331,6 +349,12 @@
 				0B00001000000000000000B3 /* HandoffCoordinator+Take.swift in Sources */,
 				0B00001000000000000000B4 /* HandoffCoordinator+Send.swift in Sources */,
 				0B00001000000000000000B6 /* HandoffOperationGate.swift in Sources */,
+				0B00001000000000000000B7 /* HandoffServices.swift in Sources */,
+				0B00001000000000000000B8 /* BluetoothHandoffService.swift in Sources */,
+				0B00001000000000000000B9 /* PeerHandoffService.swift in Sources */,
+				0B00001000000000000000BA /* HandoffComposition.swift in Sources */,
+				0B00001000000000000000BB /* HandoffPresentation.swift in Sources */,
+				0B00001000000000000000BC /* HandoffMapping.swift in Sources */,
 				076AB2182CE9D690004D45F0 /* Magic_SwitchApp.swift in Sources */,
 				076AB2192CE9D690004D45F0 /* IOBluetoothDevice+Extension.swift in Sources */,
 				0A00007000000000000000BC /* PeripheralBattery.swift in Sources */,
@@ -560,7 +584,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Magic Switch/Magic_Switch.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Magic Switch/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
@@ -571,7 +595,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
-				MARKETING_VERSION = 0.0.0;
+				MARKETING_VERSION = 2.29.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.megamansec.magic-switch";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -588,7 +612,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Magic Switch/Magic_Switch.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Magic Switch/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
@@ -599,7 +623,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
-				MARKETING_VERSION = 0.0.0;
+				MARKETING_VERSION = 2.29.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.megamansec.magic-switch";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -616,7 +640,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Magic Switch/Magic_Switch.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Magic Switch/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
@@ -627,7 +651,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
-				MARKETING_VERSION = 0.0.0;
+				MARKETING_VERSION = 2.29.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.megamansec.magic-switch";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

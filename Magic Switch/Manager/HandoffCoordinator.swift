@@ -1,78 +1,99 @@
 import Combine
 import Foundation
 
-/// The single owner of a full-set handoff. UI and automation entry points only
-/// express intent here; they never sequence Bluetooth and peer operations.
+@MainActor
 final class HandoffCoordinator: ObservableObject {
-  static let shared = HandoffCoordinator()
-
   @Published private(set) var state: HandoffState = .idle
 
-  let bluetoothStore: BluetoothPeripheralStore
-  let networkStore: NetworkDeviceStore
+  let bluetooth: BluetoothHandoffServicing
+  let peers: PeerHandoffServicing
+  let sleeper: HandoffSleeping
   var operationGate = HandoffOperationGate()
-  var activeOperation: UUID? { operationGate.activeOperation }
-  var terminalReset: DispatchWorkItem?
+  var terminalReset: Task<Void, Never>?
 
   init(
-    bluetoothStore: BluetoothPeripheralStore = .shared,
-    networkStore: NetworkDeviceStore = .shared
+    bluetooth: BluetoothHandoffServicing,
+    peers: PeerHandoffServicing,
+    sleeper: HandoffSleeping = SystemHandoffSleeper()
   ) {
-    self.bluetoothStore = bluetoothStore
-    self.networkStore = networkStore
+    self.bluetooth = bluetooth
+    self.peers = peers
+    self.sleeper = sleeper
+  }
+
+  func perform(_ direction: HandoffDirection, peer: HandoffPeer? = nil) {
+    switch direction {
+    case .take:
+      takeOnThisMac()
+    case .send:
+      guard let target = peer ?? peers.trustedPeer else {
+        failWithoutOperation(.noPeer)
+        return
+      }
+      sendToPeer(target)
+    case .toggle:
+      toggle(with: peer ?? peers.trustedPeer)
+    }
   }
 
   @discardableResult
-  func begin(_ next: HandoffState = .checking) -> UUID? {
-    dispatchPrecondition(condition: .onQueue(.main))
-    guard let id = operationGate.begin() else { return nil }
+  func begin() -> UUID? {
+    guard operationGate.activeOperation == nil else { return nil }
+    guard !bluetooth.isTransitioning, let operation = operationGate.begin() else {
+      showTerminal(.failed(.busy))
+      return nil
+    }
+    guard bluetooth.claimHandoff(operation) else {
+      _ = operationGate.finish(operation)
+      showTerminal(.failed(.busy))
+      return nil
+    }
     terminalReset?.cancel()
-    state = next
-    return id
+    state = .checking
+    return operation
   }
 
   func update(_ next: HandoffState, operation: UUID) {
-    DispatchQueue.main.async { [weak self] in
-      guard self?.operationGate.contains(operation) == true else { return }
-      self?.state = next
-    }
+    guard operationGate.contains(operation) else { return }
+    state = next
   }
 
   func finish(_ result: HandoffState, operation: UUID) {
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.operationGate.finish(operation) else { return }
-      self.state = result
-      let item = DispatchWorkItem { [weak self] in
-        guard self?.activeOperation == nil, self?.state == result else { return }
-        self?.state = .idle
-      }
-      self.terminalReset = item
-      DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: item)
+    guard operationGate.finish(operation) else { return }
+    bluetooth.finishHandoff(operation)
+    showTerminal(result)
+  }
+
+  private func showTerminal(_ result: HandoffState) {
+    state = result
+    terminalReset = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 4_000_000_000)
+      guard !Task.isCancelled, self?.operationGate.activeOperation == nil else { return }
+      self?.state = .idle
     }
   }
 
-  func notifyFailure(_ message: String, operation: UUID) {
-    finish(.failed(message), operation: operation)
-    NotificationManager.showNotification(
-      title: "Switch Failed", body: message, identifier: "handoff-failed")
+  func failWithoutOperation(_ failure: HandoffFailure) {
+    guard operationGate.activeOperation == nil else { return }
+    showTerminal(.failed(failure))
   }
 
-  func perform(_ direction: SwitchDirection, peer: NetworkDevice? = nil) {
-    switch direction {
-    case .take: takeOnThisMac()
-    case .send:
-      guard let target = peer ?? trustedPeer else { return }
-      sendToPeer(target)
-    case .toggle:
-      guard let target = peer ?? trustedPeer else {
-        takeOnThisMac()
-        return
+  func toggle(with peer: HandoffPeer?) {
+    guard let operation = begin() else { return }
+    Task { [weak self] in
+      guard let self else { return }
+      switch await bluetooth.connectionStatus() {
+      case .allConnected:
+        guard let peer else {
+          finish(.failed(.noPeer), operation: operation)
+          return
+        }
+        await runSend(to: peer, operation: operation)
+      case .allDisconnected:
+        await runTake(operation: operation, onStarted: nil)
+      case .partial:
+        finish(.failed(.mixedState), operation: operation)
       }
-      toggle(with: target)
     }
-  }
-
-  var trustedPeer: NetworkDevice? {
-    networkStore.networkDevices.first { $0.pendingFingerprint == nil }
   }
 }

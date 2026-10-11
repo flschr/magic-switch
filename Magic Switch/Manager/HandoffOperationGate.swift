@@ -21,30 +21,3 @@ struct HandoffOperationGate {
     return true
   }
 }
-
-enum HandoffFailurePoint {
-  case peerRelease
-  case localRelease
-  case peerConnect
-  case localConnect
-  case localReleaseTimeout
-}
-
-enum HandoffRecoveryAction: Equatable {
-  case keepCurrentConnection
-  case reconnectLocally
-  case retryAfterPowerCycle
-}
-
-enum HandoffRecoveryPolicy {
-  static func action(for failure: HandoffFailurePoint) -> HandoffRecoveryAction {
-    switch failure {
-    case .peerRelease:
-      return .keepCurrentConnection
-    case .localRelease, .peerConnect, .localReleaseTimeout:
-      return .reconnectLocally
-    case .localConnect:
-      return .retryAfterPowerCycle
-    }
-  }
-}

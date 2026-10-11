@@ -5,13 +5,18 @@ import SwiftUI
 import UserNotifications
 
 /// Application delegate handling lifecycle and UI setup
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
-  UNUserNotificationCenterDelegate
+  @preconcurrency UNUserNotificationCenterDelegate
 {
   // MARK: - Dependencies
 
   private let networkStore = NetworkDeviceStore.shared
   private let bluetoothStore = BluetoothPeripheralStore.shared
+  private lazy var handoffCoordinator = HandoffComposition.makeCoordinator(
+    bluetoothStore: bluetoothStore, networkStore: networkStore)
+  private lazy var takeViewModel = TakeDevicesViewModel(coordinator: handoffCoordinator)
+  private var handoffObserver: AnyCancellable?
   /// Fires the automatic full-set take when a display the user marked as a
   /// switch trigger (Settings → Other) connects to this Mac.
   private let displayMonitor = DisplayMonitor.shared
@@ -105,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     setupActivationPolicyTracking()
     setupPingFlashObserver()
     setupTransferObservers()
+    setupHandoffNotifications()
     setupDisplayTrigger()
     setupHotkey()
     // Best-effort, silent, throttled to once per 24h. Drives the "Update
@@ -276,22 +282,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     sleepObserver = center.addObserver(
       forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self else { return }
-      self.isSystemSleeping = true
-      self.bluetoothWasOnBeforeSleep = BluetoothManager.shared.state == .poweredOn
-      self.wakeBluetoothRecheck?.cancel()
-      self.wakeBluetoothRecheck = nil
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        self.isSystemSleeping = true
+        self.bluetoothWasOnBeforeSleep = BluetoothManager.shared.state == .poweredOn
+        self.wakeBluetoothRecheck?.cancel()
+        self.wakeBluetoothRecheck = nil
+      }
     }
     wakeObserver = center.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self else { return }
-      self.isSystemSleeping = false
-      // Only when sleep began with the radio on: the recheck exists for a
-      // radio that fails to come back, not to re-nag on every wake a user
-      // who keeps Bluetooth off.
-      if self.bluetoothWasOnBeforeSleep {
-        self.scheduleWakeBluetoothRecheck()
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        self.isSystemSleeping = false
+        // Only when sleep began with the radio on: the recheck exists for a
+        // radio that fails to come back, not to re-nag on every wake a user
+        // who keeps Bluetooth off.
+        if self.bluetoothWasOnBeforeSleep {
+          self.scheduleWakeBluetoothRecheck()
+        }
       }
     }
   }
@@ -342,7 +352,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     menu.delegate = self
     let item = NSMenuItem()
     let content = DropdownContentView(
-      onSwitchMac: { device in HandoffCoordinator.shared.perform(.toggle, peer: device) },
+      takeViewModel: takeViewModel,
+      onSwitchMac: { [weak self] device in
+        self?.handoffCoordinator.perform(.toggle, peer: device.handoffPeer)
+      },
       onOpenSettings: { [weak self] in self?.openSettingsWindow(nil) },
       onQuit: { [weak self] in self?.quitFromStatusBar(nil) })
     content.updateFrameToFit()
@@ -518,22 +531,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     transferReceiveObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchReceivedConnectAll, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.receiving)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.receiving) }
     }
     transferReleaseObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchReceivedUnregisterAll, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.sending)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.sending) }
     }
     transferIncomingOneObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchPeripheralIncoming, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.receiving)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.receiving) }
     }
     transferOutgoingOneObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchPeripheralOutgoing, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.sending)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.sending) }
     }
     // Settle signal for held transfers: any per-peripheral state flip
     // re-evaluates whether the last transitioning row just resolved.
@@ -614,14 +627,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
   /// `toggle` need the peer awake anyway, so they go through the menu's
   /// health-checked path.
   private func performFullSetCommand(_ direction: SwitchDirection) {
-    HandoffCoordinator.shared.perform(direction)
+    handoffCoordinator.perform(direction.handoffDirection)
   }
 
   // MARK: - Action Handlers
 
   private func setupDisplayTrigger() {
-    displayMonitor.onTriggerDisplaysConnected = { names in
-      HandoffCoordinator.shared.takeOnThisMac {
+    displayMonitor.onTriggerDisplaysConnected = { [weak self] names in
+      self?.handoffCoordinator.takeOnThisMac {
         NotificationManager.showNotification(
           title: "Display Connected",
           body:
@@ -633,10 +646,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
   }
 
   private func setupHotkey() {
-    HotkeyManager.shared.onHotkey = { direction in
-      HandoffCoordinator.shared.perform(direction)
+    HotkeyManager.shared.onHotkey = { [weak self] direction in
+      self?.handoffCoordinator.perform(direction.handoffDirection)
     }
     HotkeyManager.shared.start()
+  }
+
+  private func setupHandoffNotifications() {
+    handoffObserver = handoffCoordinator.$state
+      .removeDuplicates()
+      .sink { state in
+        guard case .failed = state, let message = HandoffPresentation.message(for: state) else {
+          return
+        }
+        NotificationManager.showNotification(
+          title: "Switch Failed", body: message, identifier: "handoff-failed")
+      }
   }
   // MARK: - Settings Management
 
@@ -659,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      self?.flashStatusBarIcon()
+      Task { @MainActor [weak self] in self?.flashStatusBarIcon() }
     }
   }
 

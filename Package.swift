@@ -10,14 +10,17 @@ let package = Package(
       name: "HandoffCore",
       path: "Magic Switch/Manager",
       exclude: [
-        "AdvertisingDiagnostics.swift", "BluetoothManager.swift", "DialbackAddresses.swift",
-        "DisplayMonitor.swift", "HandoffCoordinator+Send.swift", "HandoffCoordinator+Take.swift",
-        "HandoffCoordinator.swift", "HotkeyManager.swift", "IncomingConnection.swift",
+        "AdvertisingDiagnostics.swift", "BluetoothHandoffService.swift", "BluetoothManager.swift",
+        "DialbackAddresses.swift", "DisplayMonitor.swift", "HandoffComposition.swift",
+        "HandoffPresentation.swift", "HotkeyManager.swift", "IncomingConnection.swift",
         "NotificationManager.swift", "OutgoingConnection.swift", "PairingStore.swift",
-        "PeripheralBattery.swift", "RateLimiter.swift", "SecureChannel.swift",
+        "PeerHandoffService.swift", "PeripheralBattery.swift", "RateLimiter.swift", "SecureChannel.swift",
         "ServiceBrowser.swift", "ServicePublisher.swift", "SleepMonitor.swift", "UpdateChecker.swift"
       ],
-      sources: ["HandoffState.swift", "HandoffOperationGate.swift"]),
+      sources: [
+        "HandoffState.swift", "HandoffOperationGate.swift", "HandoffServices.swift",
+        "HandoffCoordinator.swift", "HandoffCoordinator+Take.swift", "HandoffCoordinator+Send.swift"
+      ]),
     .testTarget(
       name: "HandoffCoreTests",
       dependencies: ["HandoffCore"],

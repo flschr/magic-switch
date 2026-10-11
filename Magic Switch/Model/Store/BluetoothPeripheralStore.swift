@@ -324,6 +324,11 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// Counted, not a flag: overlapping takes of one peripheral each own a
   /// release, and the first to finish must not clear the guard for the rest.
   private var takeReleasesInFlight: [String: Int] = [:]
+  /// Exclusive ownership of the complete configured peripheral set. Local UI
+  /// actions and authenticated inbound commands share this lease so a network
+  /// round trip cannot overlap a second handoff before Bluetooth state changes.
+  /// Main-thread only.
+  private var activeFullSetHandoff: UUID?
 
   // MARK: - Computed Properties
 
@@ -342,10 +347,30 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// issue a re-entrant connect/release on a peripheral that's already pairing
   /// or being handed off. Reads `connectionStates`; main-thread only.
   var isAnyPeripheralTransitioning: Bool {
-    peripherals.contains { peripheral in
-      let state = connectionState(for: peripheral.id)
-      return state == .connecting || state == .releasing
-    }
+    activeFullSetHandoff != nil
+      || peripherals.contains { peripheral in
+        let state = connectionState(for: peripheral.id)
+        return state == .connecting || state == .releasing
+      }
+  }
+
+  @discardableResult
+  func claimFullSetHandoff(_ operation: UUID) -> Bool {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard activeFullSetHandoff == nil,
+      !peripherals.contains(where: {
+        let state = connectionState(for: $0.id)
+        return state == .connecting || state == .releasing
+      })
+    else { return false }
+    activeFullSetHandoff = operation
+    return true
+  }
+
+  func finishFullSetHandoff(_ operation: UUID) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard activeFullSetHandoff == operation else { return }
+    activeFullSetHandoff = nil
   }
 
   enum PeripheralPresence {

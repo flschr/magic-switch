@@ -252,12 +252,18 @@ final class IncomingConnection {
       break
     case .connectAll:
       let store = bluetoothStore
+      let operation = UUID()
       lastReceivedCommand = nil
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { return }
+        guard store.claimFullSetHandoff(operation) else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         NotificationCenter.default.post(name: .magicSwitchReceivedConnectAll, object: nil)
         let peripherals = store.peripherals
         guard !peripherals.isEmpty else {
+          store.finishFullSetHandoff(operation)
           self.queue.async {
             self.sendString(DeviceCommand.operationSuccess.rawValue)
           }
@@ -267,10 +273,11 @@ final class IncomingConnection {
         var allSucceeded = true
         for peripheral in peripherals {
           store.connectPeripheralFromPeer(peripheral) { success in
-            self.queue.async {
-              allSucceeded = allSucceeded && success
-              remaining -= 1
-              if remaining == 0 {
+            allSucceeded = allSucceeded && success
+            remaining -= 1
+            if remaining == 0 {
+              store.finishFullSetHandoff(operation)
+              self.queue.async {
                 self.sendString(
                   (allSucceeded ? DeviceCommand.operationSuccess : DeviceCommand.operationFailed)
                     .rawValue
@@ -282,12 +289,18 @@ final class IncomingConnection {
       }
     case .unregisterAll:
       let store = bluetoothStore
+      let operation = UUID()
       lastReceivedCommand = nil
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { return }
+        guard store.claimFullSetHandoff(operation) else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         NotificationCenter.default.post(name: .magicSwitchReceivedUnregisterAll, object: nil)
         let peripherals = store.peripherals
         guard !peripherals.isEmpty else {
+          store.finishFullSetHandoff(operation)
           self.queue.async { self.sendString(DeviceCommand.operationSuccess.rawValue) }
           return
         }
@@ -304,9 +317,15 @@ final class IncomingConnection {
           }
         }
         group.notify(queue: self.queue) {
-          self.sendString(
-            (allSucceeded ? DeviceCommand.operationSuccess : DeviceCommand.operationFailed).rawValue
-          )
+          DispatchQueue.main.async {
+            store.finishFullSetHandoff(operation)
+            self.queue.async {
+              self.sendString(
+                (allSucceeded ? DeviceCommand.operationSuccess : DeviceCommand.operationFailed)
+                  .rawValue
+              )
+            }
+          }
         }
       }
     case .ping:
@@ -369,6 +388,10 @@ final class IncomingConnection {
       let address = message
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { return }
+        guard !store.isAnyPeripheralTransitioning else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         // Peripheral is leaving this Mac for the peer — flash the sending arrow.
         NotificationCenter.default.post(name: .magicSwitchPeripheralOutgoing, object: nil)
         if let peripheral = store.peripherals.first(where: { $0.id == address }) {
@@ -392,6 +415,10 @@ final class IncomingConnection {
       let address = message
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { return }
+        guard !store.isAnyPeripheralTransitioning else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         // Peripheral is arriving at this Mac — flash the receiving arrow.
         NotificationCenter.default.post(name: .magicSwitchPeripheralIncoming, object: nil)
         guard let peripheral = store.peripherals.first(where: { $0.id == address }) else {
@@ -446,19 +473,25 @@ final class IncomingConnection {
         break
       }
       let store = bluetoothStore
-      DispatchQueue.main.async {
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        guard !store.isAnyPeripheralTransitioning else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         let toTake = macs.compactMap { mac in store.peripherals.first(where: { $0.id == mac }) }
-        guard !toTake.isEmpty else { return }
+        guard !toTake.isEmpty else {
+          self.queue.async { self.sendString(DeviceCommand.operationFailed.rawValue) }
+          return
+        }
         // One arrow flash for the batch (receiving direction).
         NotificationCenter.default.post(name: .magicSwitchPeripheralIncoming, object: nil)
         for peripheral in toTake {
           store.connectPeripheralFromPeer(peripheral)
           store.armReconnectForTakeover(peripheral.id)
         }
+        self.queue.async { self.sendString(DeviceCommand.operationSuccess.rawValue) }
       }
-      // Acked on receipt: the goal ("you now own these") is recorded even if a
-      // given peripheral isn't registered here or needs a retry to connect.
-      sendString(DeviceCommand.operationSuccess.rawValue)
     case .introduce:
       guard let identity = IntroducedIdentity(payload: message) else {
         print("introduce: malformed identity payload")

@@ -1,106 +1,87 @@
 import Foundation
 
 extension HandoffCoordinator {
-  func sendToPeer(_ peer: NetworkDevice) {
-    dispatchPrecondition(condition: .onQueue(.main))
-    guard !bluetoothStore.peripherals.isEmpty,
-      !bluetoothStore.isAnyPeripheralTransitioning,
-      let operation = begin()
-    else { return }
-
-    peer.checkHealth { [weak self] health in
-      DispatchQueue.main.async {
-        guard let self = self, self.activeOperation == operation else { return }
-        guard case .success = health else {
-          self.notifyFailure("\(peer.name) ist nicht erreichbar.", operation: operation)
-          return
-        }
-        self.networkStore.executeCommand(.ping, on: peer) { [weak self] preflight in
-          DispatchQueue.main.async {
-            guard let self = self, self.activeOperation == operation else { return }
-            guard case .success = preflight else {
-              self.notifyFailure(
-                "\(peer.name) antwortet nicht. Die Geräte bleiben hier.", operation: operation)
-              return
-            }
-            self.releaseLocally(to: peer, operation: operation)
-          }
-        }
-      }
-    }
+  func sendToPeer(_ peer: HandoffPeer) {
+    guard let operation = begin() else { return }
+    Task { [weak self] in await self?.runSend(to: peer, operation: operation) }
   }
 
-  private func releaseLocally(to peer: NetworkDevice, operation: UUID) {
-    let peripherals = bluetoothStore.peripherals
-    bluetoothStore.beginFullSetRelease()
-    update(.releasing(0, peripherals.count), operation: operation)
-    let group = DispatchGroup()
-    let lock = NSLock()
-    var completed = 0
-    var allSucceeded = true
-    for peripheral in peripherals {
-      group.enter()
-      bluetoothStore.releaseForHandoff(peripheral) { [weak self] success in
-        lock.lock()
-        completed += 1
-        allSucceeded = allSucceeded && success
-        let progress = completed
-        lock.unlock()
-        self?.update(.releasing(progress, peripherals.count), operation: operation)
-        group.leave()
-      }
+  func runSend(to peer: HandoffPeer, operation: UUID) async {
+    let peripherals = bluetooth.peripherals
+    guard !peripherals.isEmpty else {
+      finish(.failed(.noPeripherals), operation: operation)
+      return
     }
-    group.notify(queue: .main) { [weak self] in
-      guard let self = self else { return }
-      guard allSucceeded else {
-        self.bluetoothStore.finishFullSetRelease(success: false)
-        self.rollback(operation: operation, reason: "Nicht alle Geräte konnten getrennt werden.")
+    guard case .success = await peers.preflight(peer) else {
+      finish(.failed(.peerUnavailable(peer.name)), operation: operation)
+      return
+    }
+
+    bluetooth.beginRelease()
+    var released = 0
+    update(.releasing(released, peripherals.count), operation: operation)
+    for peripheral in peripherals {
+      guard operationGate.contains(operation) else { return }
+      guard await bluetooth.release(peripheral) else {
+        bluetooth.finishRelease(success: false)
+        await rollback(
+          peripherals, operation: operation, failure: .localReleaseFailed)
         return
       }
-      self.waitForLocalDisconnection(peer: peer, operation: operation)
+      released += 1
+      update(.releasing(released, peripherals.count), operation: operation)
     }
-  }
 
-  private func waitForLocalDisconnection(
-    peer: NetworkDevice, operation: UUID, attempt: Int = 0
-  ) {
-    bluetoothStore.checkActualConnectionStatusAsync { [weak self] status in
-      guard let self = self, self.activeOperation == operation else { return }
-      if status == .allDisconnected {
-        self.askPeerToConnect(peer, operation: operation)
-      } else if attempt < 9 {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-          self.waitForLocalDisconnection(peer: peer, operation: operation, attempt: attempt + 1)
-        }
-      } else {
-        self.bluetoothStore.finishFullSetRelease(success: false)
-        self.rollback(operation: operation, reason: "Bluetooth hat die Geräte nicht freigegeben.")
-      }
+    guard await waitForDisconnection(operation: operation) else {
+      bluetooth.finishRelease(success: false)
+      await rollback(
+        peripherals, operation: operation, failure: .localReleaseTimedOut)
+      return
     }
-  }
 
-  private func askPeerToConnect(_ peer: NetworkDevice, operation: UUID) {
     update(.askingPeerToConnect(peer.name), operation: operation)
-    networkStore.executeCommand(.connectAll, on: peer) { [weak self] result in
-      DispatchQueue.main.async {
-        guard let self = self, self.activeOperation == operation else { return }
-        switch result {
-        case .success:
-          self.bluetoothStore.finishFullSetRelease(success: true)
-          self.finish(
-            .succeeded("Tastatur und Maus sind jetzt auf \(peer.name)."), operation: operation)
-        case .failure(let error):
-          self.rollback(operation: operation, reason: error.userMessage)
-        }
-      }
+    switch await peers.requestConnectAll(on: peer) {
+    case .success:
+      bluetooth.finishRelease(success: true)
+      finish(.succeeded(.onPeer(peer.name)), operation: operation)
+    case .unreachable:
+      await rollbackPeerFailure(peripherals, reason: "Peer unreachable", operation: operation)
+    case .failure(let reason):
+      await rollbackPeerFailure(peripherals, reason: reason, operation: operation)
     }
   }
 
-  private func rollback(operation: UUID, reason: String) {
-    for peripheral in bluetoothStore.peripherals {
-      bluetoothStore.connectPeripheral(peripheral)
+  private func waitForDisconnection(operation: UUID) async -> Bool {
+    for attempt in 0..<10 {
+      guard operationGate.contains(operation) else { return false }
+      if await bluetooth.connectionStatus() == .allDisconnected { return true }
+      if attempt < 9 { await sleeper.sleep(nanoseconds: 500_000_000) }
     }
-    notifyFailure(
-      "\(reason) Die Geräte werden wieder mit diesem Mac verbunden.", operation: operation)
+    return false
+  }
+
+  private func rollbackPeerFailure(
+    _ peripherals: [HandoffPeripheral], reason: String, operation: UUID
+  ) async {
+    let restored = await reconnect(peripherals, operation: operation)
+    finish(
+      .failed(.peerConnectFailed(reason, restored: restored, total: peripherals.count)),
+      operation: operation)
+  }
+
+  private func rollback(
+    _ peripherals: [HandoffPeripheral], operation: UUID, failure: HandoffFailure
+  ) async {
+    _ = await reconnect(peripherals, operation: operation)
+    finish(.failed(failure), operation: operation)
+  }
+
+  private func reconnect(_ peripherals: [HandoffPeripheral], operation: UUID) async -> Int {
+    var restored = 0
+    for peripheral in peripherals {
+      guard operationGate.contains(operation) else { return restored }
+      if await bluetooth.connect(peripheral) { restored += 1 }
+    }
+    return restored
   }
 }
