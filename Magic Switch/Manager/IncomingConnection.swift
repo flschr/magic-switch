@@ -265,7 +265,7 @@ final class IncomingConnection {
         }
         var remaining = peripherals.count
         var allSucceeded = true
-        peripherals.forEach { peripheral in
+        for peripheral in peripherals {
           store.connectPeripheralFromPeer(peripheral) { success in
             self.queue.async {
               allSucceeded = allSucceeded && success
@@ -282,15 +282,33 @@ final class IncomingConnection {
       }
     case .unregisterAll:
       let store = bluetoothStore
-      DispatchQueue.main.async {
+      lastReceivedCommand = nil
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
         NotificationCenter.default.post(name: .magicSwitchReceivedUnregisterAll, object: nil)
-        store.peripherals.forEach { peripheral in
-          store.unregisterFromPC(peripheral)
+        let peripherals = store.peripherals
+        guard !peripherals.isEmpty else {
+          self.queue.async { self.sendString(DeviceCommand.operationSuccess.rawValue) }
+          return
+        }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var allSucceeded = true
+        peripherals.forEach { peripheral in
+          group.enter()
+          store.releaseForHandoff(peripheral) { success in
+            lock.lock()
+            allSucceeded = allSucceeded && success
+            lock.unlock()
+            group.leave()
+          }
+        }
+        group.notify(queue: self.queue) {
+          self.sendString(
+            (allSucceeded ? DeviceCommand.operationSuccess : DeviceCommand.operationFailed).rawValue
+          )
         }
       }
-      // See connectAll above for the best-effort-ack rationale.
-      sendString(DeviceCommand.operationSuccess.rawValue)
-      lastReceivedCommand = nil
     case .ping:
       // Pure no-op preflight; just acknowledge.
       sendString(DeviceCommand.operationSuccess.rawValue)
@@ -349,17 +367,21 @@ final class IncomingConnection {
       }
       let store = bluetoothStore
       let address = message
-      DispatchQueue.main.async {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
         // Peripheral is leaving this Mac for the peer — flash the sending arrow.
         NotificationCenter.default.post(name: .magicSwitchPeripheralOutgoing, object: nil)
         if let peripheral = store.peripherals.first(where: { $0.id == address }) {
-          store.unregisterFromPC(peripheral)
+          store.releaseForHandoff(peripheral) { success in
+            self.queue.async {
+              self.sendString(
+                (success ? DeviceCommand.operationSuccess : DeviceCommand.operationFailed).rawValue)
+            }
+          }
+        } else {
+          self.queue.async { self.sendString(DeviceCommand.operationSuccess.rawValue) }
         }
       }
-      // Reply OP_SUCCESS even if the peripheral isn't in our registered
-      // list — from the peer's perspective the goal ("you don't hold it
-      // anymore") is satisfied either way.
-      sendString(DeviceCommand.operationSuccess.rawValue)
     case .connectOne:
       guard Self.isValidMACAddress(message) else {
         print("connectOne: invalid MAC address: \(message)")

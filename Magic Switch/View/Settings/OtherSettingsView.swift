@@ -12,7 +12,9 @@ struct OtherSettingsView: View {
   @State private var launchAtLogin: Bool = false
   @State private var notificationsDenied: Bool = false
   @AppStorage(BluetoothPeripheralStore.releaseOnSleepDefaultsKey)
-  private var releaseOnSleep: Bool = true
+  private var releaseOnSleep: Bool = false
+  @AppStorage(BluetoothPeripheralStore.automaticPairingRepairDefaultsKey)
+  private var automaticPairingRepair: Bool = false
   @AppStorage(BluetoothPeripheralStore.autoReconnectDefaultsKey)
   private var autoReconnect: Bool = true
 
@@ -49,6 +51,10 @@ struct OtherSettingsView: View {
         Toggle("Reconnect peripherals if they drop", isOn: $autoReconnect)
           .help(
             "If a Magic peripheral that should be on this Mac drops — for example after closing the lid, or when you power-cycle a peripheral that got stuck — keep trying to reconnect it until it's back. When your other Mac goes to sleep or drops off the network, this Mac also adopts the peripherals it left behind. Magic Switch won't take a peripheral your other Mac is actively using."
+          )
+        Toggle("Automatically repair stale pairings", isOn: $automaticPairingRepair)
+          .help(
+            "Compatibility mode for devices that refuse a saved connection after switching Macs. This may remove and recreate the local Bluetooth pairing. Leave it off unless normal switching consistently fails."
           )
       }
       Section(header: Text("Keyboard shortcuts")) {

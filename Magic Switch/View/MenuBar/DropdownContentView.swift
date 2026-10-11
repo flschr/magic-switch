@@ -100,6 +100,7 @@ final class DropdownContentView: NSView {
   private let networkStore = NetworkDeviceStore.shared
   private let bluetoothStore = BluetoothPeripheralStore.shared
   private let updateChecker = UpdateChecker.shared
+  private let handoffCoordinator = HandoffCoordinator.shared
 
   private let onSwitchMac: (NetworkDevice) -> Void
   private let onOpenSettings: () -> Void
@@ -146,6 +147,8 @@ final class DropdownContentView: NSView {
       .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
     updateChecker.objectWillChange
       .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
+    handoffCoordinator.objectWillChange
+      .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
   }
 
   @available(*, unavailable)
@@ -177,6 +180,21 @@ final class DropdownContentView: NSView {
       stack.addArrangedSubview(makeUpdateRow(latest))
       stack.addArrangedSubview(makeDivider())
     }
+
+    stack.addArrangedSubview(makeTakeDevicesRow())
+    if let message = handoffCoordinator.state.statusMessage {
+      let color: NSColor
+      if case .failed = handoffCoordinator.state {
+        color = .systemRed
+      } else {
+        color = .secondaryLabelColor
+      }
+      let label = NSTextField(wrappingLabelWithString: message)
+      label.font = .systemFont(ofSize: 11)
+      label.textColor = color
+      stack.addArrangedSubview(fullWidth(label))
+    }
+    stack.addArrangedSubview(makeDivider())
 
     let macs = networkStore.networkDevices
     if !macs.isEmpty {
@@ -268,6 +286,26 @@ final class DropdownContentView: NSView {
     let box = NSBox()
     box.boxType = .separator
     return fullWidth(box)
+  }
+
+  private func makeTakeDevicesRow() -> NSView {
+    let state = handoffCoordinator.state
+    let row = MenuRowControl { [weak self] in self?.handoffCoordinator.takeOnThisMac() }
+    row.isEnabled = !state.isRunning && !bluetoothStore.peripherals.isEmpty
+    row.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+    let content = NSStackView()
+    content.orientation = .horizontal
+    content.alignment = .centerY
+    content.spacing = 8
+    content.addArrangedSubview(symbolView("arrow.down.to.line", color: .controlAccentColor))
+    let label = textLabel(
+      state.buttonTitle, color: row.isEnabled ? .labelColor : .secondaryLabelColor)
+    label.font = .systemFont(ofSize: 13, weight: .semibold)
+    content.addArrangedSubview(label)
+    content.addArrangedSubview(spacer())
+    row.setAccessibilityLabel(state.buttonTitle)
+    row.setAccessibilityHelp("Bringt alle eingerichteten Geräte auf diesen Mac.")
+    return clickableRow(row, content: content)
   }
 
   private func makeMacRow(_ device: NetworkDevice) -> NSView {
