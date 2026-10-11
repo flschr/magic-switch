@@ -1047,7 +1047,8 @@ extension NetworkDeviceStore {
       return
     }
 
-    let bodyTimeout: TimeInterval = command == .connectAll ? Self.handoffBodyTimeout : 5
+    let bodyTimeout: TimeInterval =
+      command == .connectAll || command == .unregisterAll ? Self.handoffBodyTimeout : 5
     let outgoing = OutgoingConnection(
       host: device.host,
       port: UInt16(device.port),
@@ -1402,7 +1403,8 @@ extension NetworkDeviceStore {
       completion(.failure(.notPaired))
       return
     }
-    let bodyTimeout: TimeInterval = command == .connectOne ? Self.handoffBodyTimeout : 5
+    let bodyTimeout: TimeInterval =
+      command == .connectOne || command == .unregisterOne ? Self.handoffBodyTimeout : 5
     let outgoing = OutgoingConnection(
       host: device.host, port: UInt16(device.port),
       countsTowardRateLimit: countsTowardRateLimit,

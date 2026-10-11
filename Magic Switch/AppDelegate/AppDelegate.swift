@@ -5,13 +5,18 @@ import SwiftUI
 import UserNotifications
 
 /// Application delegate handling lifecycle and UI setup
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
-  UNUserNotificationCenterDelegate
+  @preconcurrency UNUserNotificationCenterDelegate
 {
   // MARK: - Dependencies
 
   private let networkStore = NetworkDeviceStore.shared
   private let bluetoothStore = BluetoothPeripheralStore.shared
+  private lazy var handoffCoordinator = HandoffComposition.makeCoordinator(
+    bluetoothStore: bluetoothStore, networkStore: networkStore)
+  private lazy var takeViewModel = TakeDevicesViewModel(coordinator: handoffCoordinator)
+  private var handoffObserver: AnyCancellable?
   /// Fires the automatic full-set take when a display the user marked as a
   /// switch trigger (Settings → Other) connects to this Mac.
   private let displayMonitor = DisplayMonitor.shared
@@ -105,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     setupActivationPolicyTracking()
     setupPingFlashObserver()
     setupTransferObservers()
+    setupHandoffNotifications()
     setupDisplayTrigger()
     setupHotkey()
     // Best-effort, silent, throttled to once per 24h. Drives the "Update
@@ -276,22 +282,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     sleepObserver = center.addObserver(
       forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self else { return }
-      self.isSystemSleeping = true
-      self.bluetoothWasOnBeforeSleep = BluetoothManager.shared.state == .poweredOn
-      self.wakeBluetoothRecheck?.cancel()
-      self.wakeBluetoothRecheck = nil
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        self.isSystemSleeping = true
+        self.bluetoothWasOnBeforeSleep = BluetoothManager.shared.state == .poweredOn
+        self.wakeBluetoothRecheck?.cancel()
+        self.wakeBluetoothRecheck = nil
+      }
     }
     wakeObserver = center.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self else { return }
-      self.isSystemSleeping = false
-      // Only when sleep began with the radio on: the recheck exists for a
-      // radio that fails to come back, not to re-nag on every wake a user
-      // who keeps Bluetooth off.
-      if self.bluetoothWasOnBeforeSleep {
-        self.scheduleWakeBluetoothRecheck()
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        self.isSystemSleeping = false
+        // Only when sleep began with the radio on: the recheck exists for a
+        // radio that fails to come back, not to re-nag on every wake a user
+        // who keeps Bluetooth off.
+        if self.bluetoothWasOnBeforeSleep {
+          self.scheduleWakeBluetoothRecheck()
+        }
       }
     }
   }
@@ -342,7 +352,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     menu.delegate = self
     let item = NSMenuItem()
     let content = DropdownContentView(
-      onSwitchMac: { [weak self] device in self?.performSwitch(with: device) },
+      takeViewModel: takeViewModel,
+      onSwitchMac: { [weak self] device in
+        self?.handoffCoordinator.perform(.toggle, peer: device.handoffPeer)
+      },
       onOpenSettings: { [weak self] in self?.openSettingsWindow(nil) },
       onQuit: { [weak self] in self?.quitFromStatusBar(nil) })
     content.updateFrameToFit()
@@ -518,22 +531,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     transferReceiveObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchReceivedConnectAll, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.receiving)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.receiving) }
     }
     transferReleaseObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchReceivedUnregisterAll, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.sending)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.sending) }
     }
     transferIncomingOneObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchPeripheralIncoming, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.receiving)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.receiving) }
     }
     transferOutgoingOneObserver = NotificationCenter.default.addObserver(
       forName: .magicSwitchPeripheralOutgoing, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.beginTransferHold(.sending)
+      Task { @MainActor [weak self] in self?.beginTransferHold(.sending) }
     }
     // Settle signal for held transfers: any per-peripheral state flip
     // re-evaluates whether the last transitioning row just resolved.
@@ -614,337 +627,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
   /// `toggle` need the peer awake anyway, so they go through the menu's
   /// health-checked path.
   private func performFullSetCommand(_ direction: SwitchDirection) {
-    switch direction {
-    case .take:
-      takeAllPeripheralsIfAway()
-    case .send, .toggle:
-      guard let device = networkStore.networkDevices.first else {
-        NotificationManager.showNotification(
-          title: "Can't Switch",
-          body: "No Mac is registered — pick one in Settings → Macs.",
-          identifier: "url-command-no-device")
-        return
-      }
-      performSwitch(with: device, direction: direction)
-    }
+    handoffCoordinator.perform(direction.handoffDirection)
   }
 
   // MARK: - Action Handlers
 
-  /// Runs the switch handoff with `device`. Triggered by clicking a Mac row in
-  /// the menu (`toggle`) and by the URL scheme's full-set `send` and `toggle`
-  /// (full-set `take` goes through `takeAllPeripheralsIfAway` instead — see
-  /// `performFullSetCommand`). `checkHealth` confirms the peer's TCP port is
-  /// open before we touch any local Bluetooth state.
-  private func performSwitch(with device: NetworkDevice, direction: SwitchDirection = .toggle) {
-    // Don't start a full-set switch while a per-peripheral pair/handoff is in
-    // flight: it would issue a re-entrant connect/unregister on a peripheral
-    // that's already transitioning. The dropdown disables the Mac row for this
-    // too; this guard closes the brief click-race before the row re-renders.
-    guard !bluetoothStore.isAnyPeripheralTransitioning else { return }
-    device.checkHealth { [weak self] result in
-      // `checkHealth` fires on its own queue. Hop to main before any UI or
-      // store mutations, and before calling `checkActualConnectionStatusAsync`
-      // (which expects to be invoked from main).
-      DispatchQueue.main.async {
-        guard let self = self else { return }
-        switch result {
-        case .success:
-          self.bluetoothStore.checkActualConnectionStatusAsync { [weak self] status in
-            self?.handleSwitchAction(status: status, device: device, direction: direction)
-          }
-        case .failure(let error):
-          NotificationManager.showNotification(
-            title: "Error",
-            body: "Failed to communicate with device: \(error)"
-          )
-        case .timeout:
-          NotificationManager.showNotification(
-            title: "Error",
-            body: "No response from device. Please check if the app is running."
-          )
-        }
-      }
-    }
-  }
-
-  private func handleSwitchAction(
-    status: BluetoothPeripheralStore.ConnectionStatus,
-    device: NetworkDevice,
-    direction: SwitchDirection
-  ) {
-    switch status {
-    case .allConnected:
-      // Show "sending" immediately on the click — feedback before the
-      // secure-channel round trip. Preflight the secure channel BEFORE we
-      // touch local Bluetooth state. `checkHealth` earlier proved the TCP
-      // port is open, but not that the peer's app will accept commands —
-      // if the peer's app isn't actually running or the secure channel
-      // can't be established, we'd otherwise disconnect locally and then
-      // fail to hand peripherals over, leaving them paired nowhere.
-      beginTransfer(.sending)
-      networkStore.executeCommand(.ping, on: device) { [weak self] preflight in
-        // Fires on the outgoing-connection queue; hop to main before
-        // `endTransfer` touches the status-bar button / transfer state, and
-        // before `performHandoffToPeer` reads the published peripherals.
-        DispatchQueue.main.async {
-          guard let self = self else { return }
-          switch preflight {
-          case .failure(let err):
-            self.endTransfer()
-            NotificationManager.showNotification(
-              title: "Switch Cancelled",
-              body:
-                "Couldn't reach the other Mac (\(err.userMessage)) — peripherals stay on this Mac.",
-              identifier: "switch-preflight-failed"
-            )
-          case .success:
-            self.performHandoffToPeer(device: device)
-          }
-        }
-      }
-    case .allDisconnected:
-      // An explicit `send` is idempotent: nothing on this Mac means nothing
-      // to do — a repeated hotkey must not turn into a take.
-      guard direction != .send else { return }
-      takeAllPeripherals(from: device)
-    case .partial:
-      NotificationManager.showNotification(
-        title: "Peripherals in mixed state",
-        body:
-          "Some peripherals are on this Mac, others aren't. Right-click the menu bar icon to switch each peripheral individually, then left-click to handle them all at once.",
-        identifier: "switch-mixed-state"
-      )
-    }
-  }
-
-  /// Take the full registered set onto this Mac: ask `device` to release
-  /// everything, then connect each peripheral locally. Shows "receiving"
-  /// immediately; no preflight is needed because `executeCommand(.unregisterAll)`
-  /// *is* the preflight — if it fails, nothing has changed locally yet.
-  /// Shared by the menu's full-set switch and the display trigger. Safe when
-  /// some peripherals are already on this Mac: the peer only releases what it
-  /// holds, and `connectPeripheralFromPeer` adopts an already-live connection.
-  private func takeAllPeripherals(from device: NetworkDevice) {
-    beginTransfer(.receiving)
-    networkStore.executeCommand(.unregisterAll, on: device) { [weak self] result in
-      // `executeCommand`'s completion fires on the outgoing-connection queue;
-      // hop to main before touching the status-bar icon or the stores.
-      DispatchQueue.main.async {
-        guard let self = self else { return }
-        switch result {
-        case .success, .failure(.connectionFailed), .failure(.connectTimeout):
-          // The transfer is nowhere near done: the peer has only *released*
-          // (or vanished); the local re-pairing below is the long half.
-          // Convert the explicit "receiving" into a held one so the icon
-          // stays up until the last `.connecting` row settles, instead of
-          // reverting here — before the first local connect even starts.
-          self.beginTransferHold(.receiving)
-          // Either the peer released everything (success), or we couldn't
-          // reach it at all — in which case its machine is unreachable
-          // (asleep, off the network, app not running) and it isn't holding
-          // the peripherals anymore, since a Mac that drops off the network
-          // has already released its Bluetooth devices. Both ways the
-          // peripherals are free: grab them locally instead of stranding the
-          // user with an error they can't act on, and arm the auto-reconnect
-          // watcher as the retry safety net for any device stuck in the
-          // bonded-but-not-connected state that needs a power-cycle. Mirrors
-          // `takePeripheralFromPeer`'s success + unreachable arms, at full-set
-          // scope.
-          self.bluetoothStore.peripherals.forEach { peripheral in
-            self.bluetoothStore.connectPeripheralFromPeer(peripheral)
-            self.bluetoothStore.armReconnectForTakeover(peripheral.id)
-          }
-        case .failure(let err):
-          self.endTransfer()
-          // Reachable peer but the release-all errored, so we can't be sure
-          // it let go. Don't grab outright (that could yank a peripheral from
-          // a peer that didn't release); arm the HOLDS_ONE-gated watcher,
-          // which reclaims each one only once the peer confirms it isn't
-          // holding it — and recovers the case where the peer released but
-          // the ack was lost.
-          self.bluetoothStore.peripherals.forEach { peripheral in
-            self.bluetoothStore.armReconnectForTakeover(peripheral.id)
-          }
-          NotificationManager.showNotification(
-            title: "Switch Failed",
-            body: err.userMessage,
-            identifier: "switch-disconnect-remote-failed"
-          )
-        }
-      }
-    }
-  }
-
-  /// Wire the display trigger: when a display the user marked in Settings →
-  /// Other connects, switch the peripherals to this Mac as if its Mac row
-  /// had been clicked in the menu.
   private func setupDisplayTrigger() {
     displayMonitor.onTriggerDisplaysConnected = { [weak self] names in
-      self?.handleTriggerDisplaysConnected(names)
+      self?.handoffCoordinator.takeOnThisMac {
+        NotificationManager.showNotification(
+          title: "Display Connected",
+          body:
+            "\(names.joined(separator: ", ")) connected — switching your peripherals to this Mac.",
+          identifier: "display-trigger-switch")
+      }
     }
     displayMonitor.start()
   }
 
-  /// Wire the global hotkeys (Settings → Other) to the full-set switch paths
-  /// — one optional shortcut per direction, with the URL scheme's semantics:
-  /// `send` and `take` are idempotent, `toggle` mirrors a menu click.
   private func setupHotkey() {
     HotkeyManager.shared.onHotkey = { [weak self] direction in
-      self?.performFullSetCommand(direction)
+      self?.handoffCoordinator.perform(direction.handoffDirection)
     }
     HotkeyManager.shared.start()
   }
 
-  /// A trigger display just connected (runs on main). Announce it, then take
-  /// the full set through the shared external-claim engine below.
-  private func handleTriggerDisplaysConnected(_ names: [String]) {
-    takeAllPeripheralsIfAway {
-      NotificationManager.showNotification(
-        title: "Display Connected",
-        body:
-          "\(names.joined(separator: ", ")) connected — switching your peripherals to this Mac.",
-        identifier: "display-trigger-switch"
-      )
-    }
-  }
-
-  /// Take the full set onto this Mac in response to an automatic or external
-  /// claim — the display trigger, the URL scheme's full-set `take` — with the
-  /// same guards as the menu switch, plus two of its own: Bluetooth must be
-  /// healthy — such a trigger must never ask the peer to release peripherals
-  /// this Mac then can't take — and "everything already here" is a silent
-  /// no-op, so a repeated trigger doesn't spam. Unlike the menu there's no
-  /// clicked row to target: use the trusted peer, or fall back to a plain
-  /// local grab when none is registered — the trigger is a claim on the
-  /// peripherals either way. `onTake` fires once a take is actually going to
-  /// happen, so the display trigger can announce itself.
-  private func takeAllPeripheralsIfAway(onTake: @escaping () -> Void = {}) {
-    guard !bluetoothStore.peripherals.isEmpty,
-      !bluetoothStore.isAnyPeripheralTransitioning,
-      // The same states the status-bar icon treats as healthy (`.unknown`
-      // just means CoreBluetooth hasn't reported yet, e.g. right at launch).
-      BluetoothManager.shared.state == .poweredOn || BluetoothManager.shared.state == .unknown
-    else { return }
-    bluetoothStore.checkActualConnectionStatusAsync { [weak self] status in
-      guard let self = self, status != .allConnected else { return }
-      onTake()
-      // Same trusted-peer rule as the sleep handoff: registered and not
-      // parked behind an identity mismatch. Reachability isn't pre-checked:
-      // `takeAllPeripherals` already treats an unreachable peer as "the
-      // peripherals are free — grab them locally".
-      if PairingStore.shared.isPaired,
-        let peer = self.networkStore.networkDevices.first(where: { $0.pendingFingerprint == nil })
-      {
-        self.takeAllPeripherals(from: peer)
-      } else {
-        // No trusted peer to ask. Connect whatever answers and arm the
-        // watcher for the rest, so a stuck device is caught the moment the
-        // user power-cycles it.
-        self.bluetoothStore.peripherals.forEach { peripheral in
-          self.bluetoothStore.connectPeripheral(peripheral)
-          self.bluetoothStore.armReconnectForTakeover(peripheral.id)
+  private func setupHandoffNotifications() {
+    handoffObserver = handoffCoordinator.$state
+      .removeDuplicates()
+      .sink { state in
+        guard case .failed = state, let message = HandoffPresentation.message(for: state) else {
+          return
         }
-      }
-    }
-  }
-
-  /// Disconnect peripherals locally then hand them to the peer. Called only
-  /// after a successful preflight, but the peer can still die between the
-  /// preflight and `CONNECT_ALL` — if it does, re-connect peripherals
-  /// locally rather than leave them stranded.
-  private func performHandoffToPeer(device: NetworkDevice) {
-    // Paint every row "Releasing…" before the releases start — the mirror of
-    // the peer's "Pairing…", and what keeps `isAnyPeripheralTransitioning`
-    // true for the whole release window now that the IOBluetooth work runs
-    // asynchronously on the store's Bluetooth queue. Without it, a second
-    // hotkey/trigger/click during the releases would pass the re-entrancy
-    // guards and launch a take against the in-flight handoff. The release
-    // path leaves `.releasing` rows alone, so the paint survives until a
-    // terminal branch below resolves it.
-    bluetoothStore.beginFullSetRelease()
-    let releases = DispatchGroup()
-    bluetoothStore.peripherals.forEach { peripheral in
-      releases.enter()
-      bluetoothStore.unregisterFromPC(peripheral) { releases.leave() }
-    }
-    releases.notify(queue: .main) { [weak self] in
-      self?.continueHandoffToPeer(device: device)
-    }
-  }
-
-  /// Rest of the full-set handoff, entered once every local release landed.
-  private func continueHandoffToPeer(device: NetworkDevice) {
-    waitForDisconnection { [weak self] allDisconnected in
-      guard let self = self else { return }
-      guard allDisconnected else {
-        self.bluetoothStore.finishFullSetRelease(success: false)
-        self.endTransfer()
         NotificationManager.showNotification(
-          title: "Switch Failed",
-          body: "Couldn't disconnect Bluetooth peripherals from this Mac.",
-          identifier: "switch-disconnect-local-failed"
-        )
-        return
+          title: "Switch Failed", body: message, identifier: "handoff-failed")
       }
-      self.networkStore.executeCommand(.connectAll, on: device) { [weak self] result in
-        // The completion fires on the outgoing-connection queue (see
-        // `takeAllPeripherals`); hop to main before `endTransfer` touches
-        // the status-bar button and the transfer/latch state the settle
-        // observer reads on main.
-        DispatchQueue.main.async {
-          guard let self = self else { return }
-          if case .failure(let err) = result {
-            // Rollback: peer didn't take the peripherals, so re-pair them
-            // locally. Without this the user is left with peripherals paired
-            // nowhere. `connectPeripheral` flips each row to `.connecting`,
-            // which clears the "Releasing…" state on its own.
-            self.bluetoothStore.peripherals.forEach { peripheral in
-              self.bluetoothStore.connectPeripheral(peripheral)
-            }
-            self.endTransfer()
-            NotificationManager.showNotification(
-              title: "Switch Failed",
-              body: "\(err.userMessage) Peripherals reconnected to this Mac.",
-              identifier: "switch-connect-failed"
-            )
-          } else {
-            self.bluetoothStore.finishFullSetRelease(success: true)
-            self.endTransfer()
-          }
-        }
-      }
-    }
   }
-
-  /// Waits for all devices to disconnect with a timeout
-  /// - Parameter completion: Called with true if all devices disconnected, false if timeout occurred
-  private func waitForDisconnection(completion: @escaping (Bool) -> Void) {
-    var attempts = 0
-    let maxAttempts = 5
-
-    func check() {
-      attempts += 1
-      bluetoothStore.checkActualConnectionStatusAsync { status in
-        if status == .allDisconnected {
-          completion(true)
-        } else if attempts < maxAttempts {
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            check()
-          }
-        } else {
-          completion(false)
-        }
-      }
-    }
-
-    // First check fires immediately — this runs from the `unregisterFromPC`
-    // completions, after the disconnects were issued on the Bluetooth queue,
-    // so the device is often already disconnected. Falls through to the
-    // polled retry loop if not.
-    check()
-  }
-
   // MARK: - Settings Management
 
   /// Opens the newest release in the default browser. Wired to the "Update
@@ -966,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      self?.flashStatusBarIcon()
+      Task { @MainActor [weak self] in self?.flashStatusBarIcon() }
     }
   }
 

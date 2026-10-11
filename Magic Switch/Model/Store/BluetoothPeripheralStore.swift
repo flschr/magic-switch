@@ -115,6 +115,11 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// lives here as the single source of truth.
   static let autoReconnectDefaultsKey = "autoReconnectDroppedPeripherals"
 
+  /// Opt-in compatibility mode. Some Magic peripherals replace their link key
+  /// when another Mac adopts them. Automatic repair is destructive, so it is
+  /// never part of the normal handoff path.
+  static let automaticPairingRepairDefaultsKey = "automaticPairingRepair"
+
   /// `@AppStorage` key for the per-peripheral icon/type overrides map.
   static let typeOverridesDefaultsKey = "peripheralTypeOverrides"
 
@@ -133,7 +138,10 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// system sleep. Off lets a user keep a peripheral bonded to a Mac that
   /// sleeps (the watcher still reclaims it on wake if it doesn't reconnect).
   @AppStorage(BluetoothPeripheralStore.releaseOnSleepDefaultsKey)
-  private var releaseOnSleep: Bool = true
+  private var releaseOnSleep: Bool = false
+
+  @AppStorage(BluetoothPeripheralStore.automaticPairingRepairDefaultsKey)
+  private var automaticPairingRepair: Bool = false
 
   /// When set (default), a peripheral that drops while it should be on this
   /// Mac is retried by the auto-reconnect watcher until it's back in range
@@ -316,6 +324,11 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// Counted, not a flag: overlapping takes of one peripheral each own a
   /// release, and the first to finish must not clear the guard for the rest.
   private var takeReleasesInFlight: [String: Int] = [:]
+  /// Exclusive ownership of the complete configured peripheral set. Local UI
+  /// actions and authenticated inbound commands share this lease so a network
+  /// round trip cannot overlap a second handoff before Bluetooth state changes.
+  /// Main-thread only.
+  private var activeFullSetHandoff: UUID?
 
   // MARK: - Computed Properties
 
@@ -334,10 +347,30 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
   /// issue a re-entrant connect/release on a peripheral that's already pairing
   /// or being handed off. Reads `connectionStates`; main-thread only.
   var isAnyPeripheralTransitioning: Bool {
-    peripherals.contains { peripheral in
-      let state = connectionState(for: peripheral.id)
-      return state == .connecting || state == .releasing
-    }
+    activeFullSetHandoff != nil
+      || peripherals.contains { peripheral in
+        let state = connectionState(for: peripheral.id)
+        return state == .connecting || state == .releasing
+      }
+  }
+
+  @discardableResult
+  func claimFullSetHandoff(_ operation: UUID) -> Bool {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard activeFullSetHandoff == nil,
+      !peripherals.contains(where: {
+        let state = connectionState(for: $0.id)
+        return state == .connecting || state == .releasing
+      })
+    else { return false }
+    activeFullSetHandoff = operation
+    return true
+  }
+
+  func finishFullSetHandoff(_ operation: UUID) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard activeFullSetHandoff == operation else { return }
+    activeFullSetHandoff = nil
   }
 
   enum PeripheralPresence {
@@ -491,12 +524,9 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
         else { continue }
         connectedIDs.append(peripheral.id)
         guard shouldRelease else { continue }
-        if device.responds(to: Selector(("remove"))) {
-          device.perform(Selector(("remove")))
-        } else {
-          _ = device.closeConnection()
+        if device.closeConnection() == kIOReturnSuccess {
+          releasedIDs.append(peripheral.id)
         }
-        releasedIDs.append(peripheral.id)
       }
     }
 
@@ -699,26 +729,35 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
     fetchConnectedPeripherals()
   }
 
-  /// Removes peripheral information from the system while maintaining it in
-  /// the list. The IOBluetooth work runs on `bluetoothQueue` — `remove` and
-  /// `closeConnection` are synchronous bluetoothd IPC, seconds in the worst
-  /// case against a dead or out-of-range device, and must never stall main.
-  /// - Parameter peripheral: The peripheral to unregister
+  /// Releases the active connection while retaining the macOS pairing record.
+  /// The IOBluetooth work runs on `bluetoothQueue`; `closeConnection` is
+  /// synchronous bluetoothd IPC and must never stall main.
+  /// - Parameter peripheral: The peripheral to release
   /// - Parameter completion: Fires on main after the release has been issued
   ///   and its state change applied (a `.releasing` row is left as-is — the
   ///   handoff that painted it owns the row), for callers that sequence on it.
   func unregisterFromPC(_ peripheral: BluetoothPeripheral, completion: (() -> Void)? = nil) {
+    releaseForHandoff(peripheral) { _ in completion?() }
+  }
+
+  /// Ends the active HID session without deleting macOS' pairing record.
+  /// Completion reports whether the disconnect request was accepted.
+  func releaseForHandoff(
+    _ peripheral: BluetoothPeripheral, completion: @escaping (Bool) -> Void
+  ) {
     bluetoothQueue.async { [weak self] in
-      guard let self = self else { return }
-      self.performUnregisterFromPC(peripheral)
-      if let completion { DispatchQueue.main.async(execute: completion) }
+      guard let self = self else {
+        DispatchQueue.main.async { completion(false) }
+        return
+      }
+      let success = self.performReleaseForHandoff(peripheral)
+      DispatchQueue.main.async { completion(success) }
     }
   }
 
-  /// The IOBluetooth side of `unregisterFromPC`; runs on `bluetoothQueue`.
-  private func performUnregisterFromPC(_ peripheral: BluetoothPeripheral) {
-    guard validateBluetoothState() else { return }
-    guard let btDevice = getBluetoothDevice(for: peripheral) else { return }
+  private func performReleaseForHandoff(_ peripheral: BluetoothPeripheral) -> Bool {
+    guard validateBluetoothState() else { return false }
+    guard let btDevice = getBluetoothDevice(for: peripheral) else { return false }
 
     // Deliberate release: stop any auto-reconnect attempt for it.
     disarmReconnect(peripheral.id)
@@ -726,28 +765,15 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
     if !btDevice.isConnected() {
       print("Device is already disconnected: \(peripheral.name)")
       markDisconnectedAfterRelease(peripheral.id)
-      return
+      return true
     }
 
-    if btDevice.responds(to: Selector(("remove"))) {
-      // Suppress the imminent disconnect notification from re-arming the
-      // watcher — we're handing this peripheral away on purpose.
-      noteIntentionalRelease(peripheral.id)
-      btDevice.perform(Selector(("remove")))
-      print("Device information removed: \(peripheral.name)")
-      markDisconnectedAfterRelease(peripheral.id)
-      return
-    }
-
-    // Fallback path: a future macOS that renames or removes the private
-    // `-remove` selector lands here. `closeConnection` doesn't fully
-    // unpair (the device stays in System Settings → Bluetooth's list), but
-    // it breaks the active session so the peer can take ownership.
     noteIntentionalRelease(peripheral.id)
     let result = btDevice.closeConnection()
     if result == kIOReturnSuccess {
-      print("Fell back to closeConnection() for \(peripheral.name)")
+      print("Released connection while preserving pairing: \(peripheral.name)")
       markDisconnectedAfterRelease(peripheral.id)
+      return true
     } else {
       // The release didn't happen, so no disconnect notification will arrive
       // to consume the flag — clear it so it can't suppress a later genuine
@@ -758,9 +784,10 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
       NotificationManager.showNotification(
         title: "Couldn't Release Peripheral",
         body:
-          "Magic Switch couldn't release \(peripheral.name) from this Mac. Try Forget This Device in System Settings → Bluetooth.",
+          "Magic Switch couldn't release \(peripheral.name) from this Mac. Its pairing was preserved.",
         identifier: "unregister-failed-\(peripheral.id)"
       )
+      return false
     }
   }
 
@@ -1135,7 +1162,7 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
     connectPeripheral(
       peripheral,
       announcePairTimeout: true,
-      refreshStaleBondOnFailedOpen: true,
+      refreshStaleBondOnFailedOpen: automaticPairingRepair,
       completion: nil
     )
   }
@@ -1151,7 +1178,7 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
     connectPeripheral(
       peripheral,
       announcePairTimeout: true,
-      refreshStaleBondOnFailedOpen: true,
+      refreshStaleBondOnFailedOpen: automaticPairingRepair,
       skipRangeCheck: true,
       completion: completion
     )
@@ -2347,7 +2374,7 @@ final class BluetoothPeripheralStore: NSObject, ObservableObject, BluetoothPerip
     connectPeripheral(
       peripheral,
       announcePairTimeout: false,
-      refreshStaleBondOnFailedOpen: true,
+      refreshStaleBondOnFailedOpen: automaticPairingRepair,
       completion: nil
     )
   }

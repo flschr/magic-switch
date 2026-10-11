@@ -100,6 +100,7 @@ final class DropdownContentView: NSView {
   private let networkStore = NetworkDeviceStore.shared
   private let bluetoothStore = BluetoothPeripheralStore.shared
   private let updateChecker = UpdateChecker.shared
+  private let takeViewModel: TakeDevicesViewModel
 
   private let onSwitchMac: (NetworkDevice) -> Void
   private let onOpenSettings: () -> Void
@@ -114,10 +115,12 @@ final class DropdownContentView: NSView {
   private static let contentWidth: CGFloat = panelWidth - inset * 2
 
   init(
+    takeViewModel: TakeDevicesViewModel,
     onSwitchMac: @escaping (NetworkDevice) -> Void,
     onOpenSettings: @escaping () -> Void,
     onQuit: @escaping () -> Void
   ) {
+    self.takeViewModel = takeViewModel
     self.onSwitchMac = onSwitchMac
     self.onOpenSettings = onOpenSettings
     self.onQuit = onQuit
@@ -145,6 +148,8 @@ final class DropdownContentView: NSView {
     bluetoothStore.objectWillChange
       .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
     updateChecker.objectWillChange
+      .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
+    takeViewModel.objectWillChange
       .sink { [weak self] _ in self?.scheduleSync() }.store(in: &cancellables)
   }
 
@@ -177,6 +182,21 @@ final class DropdownContentView: NSView {
       stack.addArrangedSubview(makeUpdateRow(latest))
       stack.addArrangedSubview(makeDivider())
     }
+
+    stack.addArrangedSubview(makeTakeDevicesRow())
+    if let message = takeViewModel.message {
+      let color: NSColor
+      if case .failed = takeViewModel.state {
+        color = .systemRed
+      } else {
+        color = .secondaryLabelColor
+      }
+      let label = NSTextField(wrappingLabelWithString: message)
+      label.font = .systemFont(ofSize: 11)
+      label.textColor = color
+      stack.addArrangedSubview(fullWidth(label))
+    }
+    stack.addArrangedSubview(makeDivider())
 
     let macs = networkStore.networkDevices
     if !macs.isEmpty {
@@ -268,6 +288,25 @@ final class DropdownContentView: NSView {
     let box = NSBox()
     box.boxType = .separator
     return fullWidth(box)
+  }
+
+  private func makeTakeDevicesRow() -> NSView {
+    let row = MenuRowControl { [weak self] in self?.takeViewModel.take() }
+    row.isEnabled = !takeViewModel.isRunning && !bluetoothStore.peripherals.isEmpty
+    row.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+    let content = NSStackView()
+    content.orientation = .horizontal
+    content.alignment = .centerY
+    content.spacing = 8
+    content.addArrangedSubview(symbolView("arrow.down.to.line", color: .controlAccentColor))
+    let label = textLabel(
+      takeViewModel.title, color: row.isEnabled ? .labelColor : .secondaryLabelColor)
+    label.font = .systemFont(ofSize: 13, weight: .semibold)
+    content.addArrangedSubview(label)
+    content.addArrangedSubview(spacer())
+    row.setAccessibilityLabel(takeViewModel.title)
+    row.setAccessibilityHelp("Bringt alle eingerichteten Geräte auf diesen Mac.")
+    return clickableRow(row, content: content)
   }
 
   private func makeMacRow(_ device: NetworkDevice) -> NSView {
