@@ -8,6 +8,17 @@ enum PairingError: Error {
   case invalidCode
   case derivationFailed
   case keychainFailed(OSStatus)
+
+  var userMessage: String {
+    switch self {
+    case .invalidCode:
+      return "Invalid code."
+    case .derivationFailed:
+      return "Couldn't derive a key from that code."
+    case .keychainFailed(let status):
+      return KeychainFailureMessage.message(for: status)
+    }
+  }
 }
 
 /// Manages the pre-shared key used to authenticate peer Magic Switch installs.
@@ -46,6 +57,7 @@ final class PairingStore: ObservableObject {
 
   @Published private(set) var isPaired: Bool = false
   @Published private(set) var fingerprint: String? = nil
+  @Published private(set) var installationIssue: ApplicationIntegrityIssue?
 
   // MARK: - Initialization
 
@@ -245,6 +257,7 @@ final class PairingStore: ObservableObject {
   /// opens: a transient read failure at launch is indistinguishable from
   /// "unpaired" and would otherwise stick for the whole session.
   func refreshState() {
+    installationIssue = ApplicationIntegrity.currentIssue()
     if let data = readKeyData() {
       isPaired = true
       fingerprint = Self.fingerprint(forKey: data)
@@ -269,21 +282,27 @@ final class PairingStore: ObservableObject {
   }
 
   private func writeKeyData(_ data: Data) throws {
-    let delete: [String: Any] = [
+    let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: Self.keychainService,
       kSecAttrAccount as String: Self.keychainAccount,
     ]
-    SecItemDelete(delete as CFDictionary)
 
-    let add: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: Self.keychainService,
-      kSecAttrAccount as String: Self.keychainAccount,
+    let updateStatus = SecItemUpdate(
+      query as CFDictionary,
+      [kSecValueData as String: data] as CFDictionary
+    )
+    if updateStatus == errSecSuccess { return }
+    guard updateStatus == errSecItemNotFound else {
+      throw PairingError.keychainFailed(updateStatus)
+    }
+
+    var add = query
+    add.merge([
       kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
       kSecAttrSynchronizable as String: false,
       kSecValueData as String: data,
-    ]
+    ]) { _, new in new }
     let status = SecItemAdd(add as CFDictionary, nil)
     guard status == errSecSuccess else {
       throw PairingError.keychainFailed(status)

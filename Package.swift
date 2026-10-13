@@ -18,7 +18,7 @@ let package = Package(
         "ServiceBrowser.swift", "ServicePublisher.swift", "SleepMonitor.swift", "UpdateChecker.swift"
       ],
       sources: [
-        "HandoffState.swift", "HandoffOperationGate.swift", "HandoffServices.swift",
+        "ApplicationIntegrity.swift", "HandoffState.swift", "HandoffOperationGate.swift", "HandoffServices.swift",
         "HandoffCoordinator.swift", "HandoffCoordinator+Take.swift", "HandoffCoordinator+Send.swift"
       ]),
     .testTarget(

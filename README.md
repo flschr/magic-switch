@@ -140,6 +140,12 @@ Magic Switch tells you when there's a new version — it never updates itself. A
 
 ## Troubleshooting
 
+- **Keychain error `-67028` while pairing.** This means macOS no longer accepts
+  the app's signature, usually because an unpacked `.app` was transferred through
+  iCloud Drive or another sync provider. Quit and delete that copy. Transfer the
+  original ZIP or DMG instead, unpack it locally, move Magic Switch to
+  `/Applications`, and try again. Deleting Keychain entries does not repair the
+  damaged app bundle.
 - Both Macs running Magic Switch, both showing "Paired" in the Pairing tab.
 - Devices powered on; Bluetooth enabled.
 - Same network; TCP port 41952 not blocked by firewall.
