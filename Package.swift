@@ -13,12 +13,13 @@ let package = Package(
         "AdvertisingDiagnostics.swift", "BluetoothHandoffService.swift", "BluetoothManager.swift",
         "DialbackAddresses.swift", "DisplayMonitor.swift", "HandoffComposition.swift",
         "HandoffPresentation.swift", "HotkeyManager.swift", "IncomingConnection.swift",
-        "NotificationManager.swift", "OutgoingConnection.swift", "PairingStore.swift",
+        "NotificationManager.swift", "OutgoingConnection.swift",
         "PeerHandoffService.swift", "PeripheralBattery.swift", "RateLimiter.swift", "SecureChannel.swift",
         "ServiceBrowser.swift", "ServicePublisher.swift", "SleepMonitor.swift", "UpdateChecker.swift"
       ],
       sources: [
-        "ApplicationIntegrity.swift", "HandoffState.swift", "HandoffOperationGate.swift", "HandoffServices.swift",
+        "ApplicationIntegrity.swift", "PairingCode.swift", "PairingKeychain.swift", "PairingStore.swift",
+        "HandoffState.swift", "HandoffOperationGate.swift", "HandoffServices.swift",
         "HandoffCoordinator.swift", "HandoffCoordinator+Take.swift", "HandoffCoordinator+Send.swift"
       ]),
     .testTarget(

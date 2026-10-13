@@ -11,7 +11,7 @@ struct PairingSettingsView: View {
   @State private var showGenerateSheet = false
   @State private var showEnterSheet = false
   @State private var showUnpairAlert = false
-  @State private var unpairErrorStatus: OSStatus?
+  @State private var unpairError: PairingError?
 
   // MARK: - Body
 
@@ -37,9 +37,11 @@ struct PairingSettingsView: View {
           "Magic Switch will stop accepting commands from your other Mac until you pair again."
         ),
         primaryButton: .destructive(Text("Unpair")) {
-          unpairErrorStatus = nil
-          pairing.unpair { status in
-            unpairErrorStatus = status
+          unpairError = nil
+          pairing.unpair { result in
+            if case .failure(let error) = result {
+              unpairError = error
+            }
           }
         },
         secondaryButton: .cancel()
@@ -61,6 +63,12 @@ struct PairingSettingsView: View {
         .foregroundColor(.secondary)
       if let issue = pairing.installationIssue {
         Label(issue.message, systemImage: "exclamationmark.shield.fill")
+          .foregroundColor(.red)
+          .font(.callout)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if let issue = pairing.storageIssue {
+        Label(issue.userMessage, systemImage: "exclamationmark.shield.fill")
           .foregroundColor(.red)
           .font(.callout)
           .fixedSize(horizontal: false, vertical: true)
@@ -113,8 +121,8 @@ struct PairingSettingsView: View {
       }
       .foregroundColor(.red)
       .help("Remove the saved pairing key. This Mac will stop accepting commands.")
-      if let status = unpairErrorStatus {
-        Text(KeychainFailureMessage.message(for: status))
+      if let error = unpairError {
+        Text(error.userMessage)
           .foregroundColor(.red)
           .font(.caption)
       }
@@ -229,10 +237,10 @@ private struct GenerateCodeSheet: View {
   }
 
   private func discard() {
-    pairing.unpair { status in
-      if let status {
+    pairing.unpair { result in
+      if case .failure(let error) = result {
         saveState = .failed
-        errorMessage = KeychainFailureMessage.message(for: status)
+        errorMessage = error.userMessage
       } else {
         isPresented = false
       }

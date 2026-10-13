@@ -139,7 +139,7 @@ jobs:
             -configuration Release \
             -archivePath "Magic Switch.xcarchive" \
             CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM=LA3A27SJGR \
+            DEVELOPMENT_TEAM=H2FNY8B779 \
             CODE_SIGN_IDENTITY="Developer ID Application" \
             ENABLE_HARDENED_RUNTIME=YES \
             OTHER_CODE_SIGN_FLAGS="--timestamp"
@@ -150,8 +150,8 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           DETAILS="$(codesign -dvv "$APP" 2>&1)"
           echo "$DETAILS"
-          grep -q '^Authority=Developer ID Application: .*(LA3A27SJGR)$' <<< "$DETAILS"
-          grep -q '^TeamIdentifier=LA3A27SJGR$' <<< "$DETAILS"
+          grep -q '^Authority=Developer ID Application: .*(H2FNY8B779)$' <<< "$DETAILS"
+          grep -q '^TeamIdentifier=H2FNY8B779$' <<< "$DETAILS"
           grep -q '^Timestamp=' <<< "$DETAILS"
 
       - name: Notarize
@@ -261,7 +261,7 @@ jobs:
             -archivePath "Magic Switch.xcarchive" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY=- \
-            DEVELOPMENT_TEAM=LA3A27SJGR
+            DEVELOPMENT_TEAM=H2FNY8B779
 
       - name: Upload to App Store Connect
         env:
@@ -285,7 +285,7 @@ jobs:
             <key>destination</key>
             <string>upload</string>
             <key>teamID</key>
-            <string>LA3A27SJGR</string>
+            <string>H2FNY8B779</string>
             <key>signingStyle</key>
             <string>automatic</string>
             <key>manageAppVersionAndBuildNumber</key>

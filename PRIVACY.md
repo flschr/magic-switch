@@ -43,4 +43,4 @@ Any changes to this policy will be made in this file. Its full history is in thi
 
 ## Contact
 
-For questions about this policy, open an issue at <https://github.com/MegaManSec/magic-switch/issues>.
+For questions about this policy, open an issue at <https://github.com/flschr/magic-switch/issues>.
