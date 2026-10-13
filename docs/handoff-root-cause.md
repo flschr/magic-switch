@@ -33,6 +33,7 @@ the cause; they only make Apple's account-bound Universal Control unsuitable.
 | P2 | Failures were strings spread through callbacks and rollback could finish before reconnect results. | Typed failures and success states drive presentation; rollback awaits every reconnect result before completing. |
 | P2 | Repeated clicks and external transitions had no consistent feedback. | A local operation gate makes clicks idempotent; the resource lease rejects competing work; busy state is visible. |
 | P2 | The critical path had no deterministic tests or privacy declaration. | The core is a Swift package with fake services and transaction tests; `PrivacyInfo.xcprivacy` declares app-only UserDefaults access. |
+| P1 | Syncing an unpacked app through iCloud added Finder metadata, invalidated its signature, and made Keychain reject it with `-67028`. | The app now validates itself before pairing, explains the exact recovery, and release packaging verifies both ZIP and DMG after extraction. Raw `.app` bundles are no longer deliverables. |
 
 ## Current ownership model
 
@@ -71,8 +72,14 @@ SwiftUI. Runtime adapters translate those details at the boundary.
    operations. Added the resource-level lease and inbound rejection rules.
 5. **Verification audit:** package tests, full app build, static analyzer,
    formatting, signing checks, and launch smoke test are release gates.
+6. **Installation-integrity audit:** reproduced Keychain `-67028` from an app
+   whose signature was invalidated by FileProvider metadata. Added an in-app
+   signature gate, actionable recovery, and post-package signature checks.
+7. **Keychain failure audit:** found delete-before-add and a silent failed
+   discard. Replaced destructive replacement with update-or-add and made every
+   failed save/delete visible without reporting false success.
 
-After cycle 5 there are no known open P0, P1, or P2 findings in the handoff,
+After cycle 7 there are no known open P0, P1, or P2 findings in the handoff,
 security, lifecycle, packaging, or launch paths.
 
 ## Deliberate P3 / physical constraints

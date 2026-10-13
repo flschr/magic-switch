@@ -188,6 +188,15 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "Magic Switch.app" "../../../Magic Switch.app.zip"
           echo "zip-path=$(realpath "../../../Magic Switch.app.zip")" >> "$GITHUB_OUTPUT"
 
+      - name: Verify packaged ZIP
+        run: |
+          VERIFY_DIR="$RUNNER_TEMP/verify-package"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k "Magic Switch.app.zip" "$VERIFY_DIR"
+          codesign --verify --deep --strict --verbose=2 "$VERIFY_DIR/Magic Switch.app"
+          xcrun stapler validate "$VERIFY_DIR/Magic Switch.app"
+          spctl -a -vvv -t exec "$VERIFY_DIR/Magic Switch.app"
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
