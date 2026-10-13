@@ -27,6 +27,7 @@ enum ApplicationIntegrity {
 enum KeychainFailureMessage {
   static let invalidBundleStatus: OSStatus = -67028
   static let missingEntitlementStatus: OSStatus = -34018
+  static let invalidOwnerStatus: OSStatus = -25244
 
   static func message(for status: OSStatus) -> String {
     switch status {
@@ -38,6 +39,9 @@ enum KeychainFailureMessage {
     case missingEntitlementStatus:
       return "This copy of Magic Switch cannot access Keychain because its signing permissions are "
         + "invalid. Reinstall a signed ZIP or DMG and try again. (Error -34018.)"
+    case invalidOwnerStatus:
+      return "This pairing key belongs to an older Magic Switch identity and cannot be changed. "
+        + "Install the latest version to reset pairing safely. (Error -25244.)"
     default:
       return "Magic Switch could not access Keychain (error \(status)). Quit the app, reopen it "
         + "from Applications, and try again."

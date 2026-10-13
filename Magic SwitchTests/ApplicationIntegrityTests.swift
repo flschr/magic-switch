@@ -18,6 +18,13 @@ final class ApplicationIntegrityTests: XCTestCase {
     XCTAssertTrue(message.contains("Reinstall"))
   }
 
+  func testInvalidOwnerMessageExplainsIdentityConflict() {
+    let message = KeychainFailureMessage.message(for: -25244)
+
+    XCTAssertTrue(message.contains("older Magic Switch identity"))
+    XCTAssertTrue(message.contains("latest version"))
+  }
+
   func testUnknownStatusRemainsActionable() {
     let message = KeychainFailureMessage.message(for: -1)
 

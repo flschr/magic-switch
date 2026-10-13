@@ -254,7 +254,7 @@ struct OtherSettingsView: View {
   // MARK: - Private Methods
 
   private func showLicenseInfo() {
-    guard let url = URL(string: "https://github.com/MegaManSec/magic-switch/blob/main/LICENSE")
+    guard let url = URL(string: "https://github.com/flschr/magic-switch/blob/main/LICENSE")
     else { return }
     openURL(url)
   }
