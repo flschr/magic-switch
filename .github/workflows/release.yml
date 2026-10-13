@@ -75,7 +75,11 @@ jobs:
     # Gate build on a real release version. The previous code defaulted an
     # empty extraction to "0.0.0", which then built and tagged a v0.0.0
     # release, overwriting tag history.
-    if: needs.version.outputs.new-release-version != ''
+    # Forks do not inherit signing/notarization secrets. Keep their CI green
+    # and require an explicit repository variable before enabling releases.
+    if: >-
+      needs.version.outputs.new-release-version != '' &&
+      (github.repository_owner == 'MegaManSec' || vars.RELEASE_ENABLED == 'true')
     runs-on: macos-latest
     permissions:
       contents: read
@@ -220,7 +224,9 @@ jobs:
 
   app-store:
     needs: version
-    if: needs.version.outputs.new-release-version != ''
+    if: >-
+      needs.version.outputs.new-release-version != '' &&
+      (github.repository_owner == 'MegaManSec' || vars.APP_STORE_RELEASE_ENABLED == 'true')
     runs-on: macos-latest
     permissions:
       contents: read
@@ -301,7 +307,9 @@ jobs:
     needs:
       - version
       - build
-    if: needs.version.outputs.new-release-version != ''
+    if: >-
+      needs.version.outputs.new-release-version != '' &&
+      (github.repository_owner == 'MegaManSec' || vars.RELEASE_ENABLED == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -351,7 +359,10 @@ jobs:
     needs:
       - version
       - release
-    if: needs.version.outputs.new-release-version != ''
+    # A fork must never mutate MegaManSec's Homebrew tap.
+    if: >-
+      needs.version.outputs.new-release-version != '' &&
+      github.repository_owner == 'MegaManSec'
     runs-on: ubuntu-latest
     environment: homebrew-tap
     permissions:
